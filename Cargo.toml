@@ -1,0 +1,13 @@
+[package]
+name = "hd44780_menu"
+version = "0.1.0"
+authors = ["Cor <prive@corpeters.nl>"]
+edition = "2018"
+
+[dependencies]
+embedded-hal = "*"
+heapless = "*"
+
+[dependencies.hd44780-driver]
+path = "/home/cor/workspace/hd44780-driver"
+
