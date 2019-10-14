@@ -28,18 +28,10 @@
 #![allow(clippy::print_stdout)]
 
 use core::fmt::Write;
-use embedded_hal::blocking::delay::{DelayMs, DelayUs};
-use hd44780_driver::{
-    Cursor,
-    DataBus,
-    Display,
-    DisplayMode,
-    HD44780,
-};
+use hd44780_driver::HD44780;
 
 use heapless::{
     consts::U10,
-    consts::U18,
     consts::U20,
     String,
 };
@@ -92,23 +84,30 @@ const ROW_START: [u8; LINES] = [
 /// Try to print to the hd44780 driver
 #[macro_export]
 macro_rules! vprint {
-    ($hd44780:expr, $($arg:tt)*) => ({
-        let mut output: String<U20> = String::new();
+    ($hd44780:expr, $size:ident, $($arg:tt)*) => ({
+        let mut output: String<$size> = String::new();
         if core::fmt::write(&mut output, format_args!($($arg)*)).is_ok() {
-
-            #[cfg(test)] { print!("{}", output); }
-
             for b in output.chars() {
                 $hd44780.write_char(b);
+            }
+            for _ in 0..output.capacity() - output.len() {
+                $hd44780.write_char(' ');
             }
         }
     })
 }
 
+#[macro_export]
+macro_rules! vprintln {
+    ($stdout:expr)                         => { vprint!($stdout, U20, "") };
+    ($stdout:expr, $fmt:expr)              => { vprint!($stdout, U20, $fmt) };
+    ($stdout:expr, $fmt:expr, $($arg:tt)*) => { vprint!($stdout, U20, $fmt, $($arg)*) };
+}
+
 pub struct Menu<'a, Context> {
     pub name: &'a str,
-    pub show: [Option<&'a MenuItem<'a, Context> >; 4],
-    pub menu: &'a [&'a MenuItem<'a, Context>],
+    pub show: &'a MenuItem<'a, Context>,
+    pub menu: &'a MenuItem<'a, Context>,
 }
 
 pub enum WriteOptions {
@@ -118,10 +117,12 @@ pub enum WriteOptions {
 
 type WriteCallbackFn<C> = fn(wo: WriteOptions, context: &mut C);
 type ReadCallbackFn<C> = fn(buf: &mut dyn Write, context: &C);
+type FullScreenCallbackFn<C> = fn(drv: &mut dyn HD44780, context: &C, );
 
 #[allow(dead_code)]
 pub enum MenuItemType<'a, Context> {
-    SubMenu(&'a [MenuItemType<'a, Context>]),
+    SubMenu(&'a [MenuItem<'a, Context>]),
+    FullScreen(FullScreenCallbackFn<Context>),
     ReadValue(ReadCallbackFn<Context>),
     WriteValue(ReadCallbackFn<Context>, WriteCallbackFn<Context>),
 }
@@ -129,7 +130,6 @@ pub enum MenuItemType<'a, Context> {
 pub struct MenuItem<'a, Context> {
     pub name: &'a str,
     pub parent: Option<&'a MenuItem<'a, Context> >,
-    pub hint: Option<&'a str>,
     pub menu_type: MenuItemType<'a, Context>,
 }
 impl<'a, Context> MenuItem<'a, Context> {
@@ -143,13 +143,9 @@ impl<'a, Context> MenuItem<'a, Context> {
             MenuItemType::ReadValue(ref rcb) | MenuItemType::WriteValue(ref rcb, ..)  => {
                 let mut string = String::<U10>::new();
                 rcb(&mut string, ctx);
-                if let Some(hint) = self.hint {
-                    let _ = write!(output, "{}: {} {}", self.name, string, hint);
-                }
-                else {
-                    let _ = write!(output, "{}: {}", self.name, string);
-                }
+                let _ = write!(output, "{}: {}", self.name, string);
             },
+            MenuItemType::FullScreen(..) => {},
         }
 
         output
@@ -159,9 +155,9 @@ impl<'a, Context> MenuItem<'a, Context> {
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
 enum MenuState<'a, Context> {
-    Show,
-    BrowseMenus(&'a [&'a MenuItem<'a, Context>], usize),
+    BrowseMenus(&'a MenuItem<'a, Context>, usize),
     ChangeSetting(&'a MenuItem<'a, Context>),
+    Show(&'a MenuItem<'a, Context>),
 }
 
 #[allow(dead_code)]
@@ -174,7 +170,7 @@ pub struct Dispatcher<'a, Context> {
 impl<'a, Context> Dispatcher<'a, Context> {
     pub const fn new(menu: &'a Menu<'_, Context>) -> Self {
         Dispatcher {
-            state: MenuState::Show,
+            state: MenuState::BrowseMenus(menu.show, 0),
             menu,
         }
     }
@@ -194,66 +190,136 @@ impl<'a, Context> Dispatcher<'a, Context> {
     }
 
     pub fn reset_to_show(&mut self) {
-        self.state = MenuState::Show;
+        self.state = MenuState::BrowseMenus(self.menu.show, 0);
     }
 
-    pub fn run<D,B>(&mut self, keys: &dyn ContainsKey, ctx: &mut Context, drv: &mut HD44780<D,B>) where D: DelayMs<u8> + DelayUs<u16>, B: DataBus {
+    fn show(&mut self, menu: &'a MenuItem<'_, Context>, keys: &dyn ContainsKey, ctx: &mut Context, drv: &mut dyn HD44780) -> MenuState<'a, Context> {
+                if let MenuItemType::FullScreen(fcb) = menu.menu_type {
+                    fcb(drv, ctx);
+                }
+                else if let MenuItemType::ReadValue(_) = menu.menu_type {
+                    drv.set_cursor_pos(ROW_START[0]);
+                    vprintln!(drv);
+
+                    drv.set_cursor_pos(ROW_START[1]);
+                    vprintln!(drv, "  {}", menu.name);
+
+                    drv.set_cursor_pos(ROW_START[2]);
+                    vprintln!(drv, "  {}", menu.to_string(ctx) );
+
+                    drv.set_cursor_pos(ROW_START[3]);
+                    vprintln!(drv);
+                }
+
+                if keys.contains(Keys::None) {
+                    MenuState::Show(menu)
+                }
+                else {
+                    MenuState::BrowseMenus(menu.parent.unwrap_or(self.menu.menu), 0)
+                }
+    }
+
+    fn change_setting(&mut self, menu: &'a MenuItem<'_, Context>, keys: &dyn ContainsKey, ctx: &mut Context, drv: &mut dyn HD44780) -> MenuState<'a, Context> {
+        if let MenuItemType::WriteValue(_, fcb) = menu.menu_type {
+            drv.set_cursor_pos(ROW_START[0]);
+            vprintln!(drv);
+
+            drv.set_cursor_pos(ROW_START[1]);
+            vprintln!(drv, "  {}", menu.name);
+
+            drv.set_cursor_pos(ROW_START[2]);
+            vprintln!(drv, "  {}", menu.to_string(ctx) );
+
+            drv.set_cursor_pos(ROW_START[3]);
+            vprintln!(drv);
+
+            if keys.contains(Keys::Enter) {
+                MenuState::BrowseMenus(menu.parent.unwrap_or(self.menu.menu), 0)
+            }
+            else {
+                if keys.contains(Keys::NextItem) {
+                    fcb(WriteOptions::Next, ctx);
+                }
+                else if keys.contains(Keys::PreviousItem) {
+                    fcb(WriteOptions::Previous, ctx);
+                }
+
+                MenuState::ChangeSetting(menu)
+            }
+        }
+        else {
+            MenuState::BrowseMenus(menu.parent.unwrap_or(self.menu.menu), 0)
+        }
+    }
+
+    pub fn run(&mut self, keys: &dyn ContainsKey, ctx: &mut Context, drv: &mut dyn HD44780) {
         self.state = match self.state {
-            MenuState::Show => {
-                //drv.clear();
-                //drv.reset();
-                for (r, menuitem) in self.menu.show.iter().enumerate() {
-                    if let Some(menuitem) = menuitem {
-                        let s = menuitem.to_string(ctx);
+            MenuState::BrowseMenus(r, mut idx) => {
+
+                // TODO: add back to previous menu
+                if let MenuItemType::SubMenu(list)  = r.menu_type {
+                    if idx >= list.len() { idx = 0; }
+
+                    drv.clear();
+                    drv.reset();
+
+                    let size = if list.len() < LINES { list.len() } else { LINES };
+                    let (min, max) = Self::calc_window(0, idx, list.len(), size);
+
+                    let mut max_idx = 0;
+                    for (r, submenu) in list.iter().skip(min).take(max).enumerate() {
+                        let s = submenu.to_string(ctx);
 
                         drv.set_cursor_pos(ROW_START[r]);
-                        vprint!(drv, "{}", s);
-                        for _ in 0 .. (20 - s.len() ) {
-                            drv.write_char(' ');
-                        }
+                        vprintln!(drv, "  {}", s);
+
+                        max_idx = r;
+                    }
+
+                    // Clear unused lines
+                    for i in ROW_START.iter().skip(max_idx) {
+                        drv.set_cursor_pos(*i);
+                        vprintln!(drv, "");
+                    }
+
+                    drv.set_cursor_pos(ROW_START[idx - min]);
+                    drv.write_char('>');
+
+                    // TODO: check destination type
+                    if keys.contains(Keys::NextMenu) {
+                        MenuState::BrowseMenus(r, idx.saturating_sub(1) )
+                    }
+                    else if keys.contains(Keys::PreviousMenu) {
+                        MenuState::BrowseMenus(r, idx.saturating_add(1) )
+                    }
+                    else if keys.contains(Keys::Enter) || keys.contains(Keys::NextItem) {
+                        MenuState::BrowseMenus(&list[idx], 0)
+                    }
+                    else if keys.contains(Keys::PreviousItem) {
+                        MenuState::BrowseMenus(r.parent.unwrap_or(self.menu.menu), 0)
+                    }
+                    else {
+                        MenuState::BrowseMenus(r, idx)
                     }
                 }
-                if keys.contains(Keys::None) {
-                    MenuState::Show
+                else if let MenuItemType::FullScreen(_)  = r.menu_type {
+                    MenuState::Show(r)
+                }
+                else if let MenuItemType::ReadValue(_)  = r.menu_type {
+                    MenuState::Show(r)
+                }
+                else if let MenuItemType::WriteValue(_, _)  = r.menu_type {
+                    MenuState::ChangeSetting(r)
                 }
                 else {
                     MenuState::BrowseMenus(self.menu.menu, 0)
                 }
             },
-            MenuState::BrowseMenus(r, mut idx) => {
-                if idx >= r.len() { idx = r.len()-1; }
-
-                drv.clear();
-                drv.reset();
-
-                let size = if r.len() < LINES { r.len() } else { LINES };
-                let (min, max) = Self::calc_window(0, idx, r.len(), size);
-
-                for (r, submenu) in self.menu.menu.iter().skip(min).take(max).enumerate() {
-                    let s = submenu.to_string(ctx);
-
-                    drv.set_cursor_pos(ROW_START[r]);
-                    vprint!(drv, "  {}", s);
-                }
-
-                drv.set_cursor_pos(ROW_START[idx - min]);
-                drv.write_char('>');
-
-                if keys.contains(Keys::NextMenu) {
-                    MenuState::BrowseMenus(r, idx.saturating_sub(1) )
-                }
-                else if keys.contains(Keys::NextMenu) {
-                    MenuState::BrowseMenus(r, idx.saturating_add(1) )
-                }
-                else if keys.contains(Keys::Enter) {
-                    MenuState::ChangeSetting(r[idx])
-                }
-                else {
-                    MenuState::BrowseMenus(r, idx)
-                }
+            MenuState::Show(s) => {
+                self.show(s, keys, ctx, drv)
             },
             MenuState::ChangeSetting(r) => {
-                MenuState::ChangeSetting(r)
+                self.change_setting(r, keys, ctx, drv)
             },
         }
     }
