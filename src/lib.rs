@@ -121,7 +121,7 @@ type FullScreenCallbackFn<C> = fn(drv: &mut dyn HD44780, context: &C, );
 
 #[allow(dead_code)]
 pub enum MenuItemType<'a, Context> {
-    SubMenu(&'a [MenuItem<'a, Context>]),
+    SubMenu(&'a [&'a MenuItem<'a, Context>]),
     FullScreen(FullScreenCallbackFn<Context>),
     ReadValue(ReadCallbackFn<Context>),
     WriteValue(ReadCallbackFn<Context>, WriteCallbackFn<Context>),
@@ -164,19 +164,21 @@ enum MenuState<'a, Context> {
 pub struct Dispatcher<'a, Context> {
     state: MenuState<'a, Context>,
     menu: &'a Menu<'a, Context>,
+    change: bool,
 }
 
 #[allow(dead_code)]
 impl<'a, Context> Dispatcher<'a, Context> {
     pub const fn new(menu: &'a Menu<'_, Context>) -> Self {
         Dispatcher {
+            change: true,
             state: MenuState::BrowseMenus(menu.show, 0),
             menu,
         }
     }
 
     fn calc_window(min: usize, idx: usize, max: usize, size: usize) -> (usize, usize) {
-        assert!(min < idx && idx < max, "calc_window: parameter error!");
+        assert!(min <= idx && idx <= max, "calc_window: parameter error!");
 
         if idx +2 >= max {
             (max - size, max)
@@ -212,6 +214,7 @@ impl<'a, Context> Dispatcher<'a, Context> {
                 }
 
                 if keys.contains(Keys::None) {
+                    self.change = false;
                     MenuState::Show(menu)
                 }
                 else {
@@ -243,6 +246,9 @@ impl<'a, Context> Dispatcher<'a, Context> {
                 else if keys.contains(Keys::PreviousItem) {
                     fcb(WriteOptions::Previous, ctx);
                 }
+                else if keys.contains(Keys::None) {
+                    self.change = false;
+                }
 
                 MenuState::ChangeSetting(menu)
             }
@@ -253,15 +259,18 @@ impl<'a, Context> Dispatcher<'a, Context> {
     }
 
     pub fn run(&mut self, keys: &dyn ContainsKey, ctx: &mut Context, drv: &mut dyn HD44780) {
+        /* Reset Display, unless told not to, which should happen in the default case. */
+        if self.change {
+            drv.clear();
+        }
+
+        self.change = true;
         self.state = match self.state {
             MenuState::BrowseMenus(r, mut idx) => {
 
                 // TODO: add back to previous menu
                 if let MenuItemType::SubMenu(list)  = r.menu_type {
                     if idx >= list.len() { idx = 0; }
-
-                    drv.clear();
-                    drv.reset();
 
                     let size = if list.len() < LINES { list.len() } else { LINES };
                     let (min, max) = Self::calc_window(0, idx, list.len(), size);
@@ -274,12 +283,6 @@ impl<'a, Context> Dispatcher<'a, Context> {
                         vprintln!(drv, "  {}", s);
 
                         max_idx = r;
-                    }
-
-                    // Clear unused lines
-                    for i in ROW_START.iter().skip(max_idx) {
-                        drv.set_cursor_pos(*i);
-                        vprintln!(drv, "");
                     }
 
                     drv.set_cursor_pos(ROW_START[idx - min]);
@@ -299,6 +302,7 @@ impl<'a, Context> Dispatcher<'a, Context> {
                         MenuState::BrowseMenus(r.parent.unwrap_or(self.menu.menu), 0)
                     }
                     else {
+                        self.change = false;
                         MenuState::BrowseMenus(r, idx)
                     }
                 }

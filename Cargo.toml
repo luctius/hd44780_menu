@@ -1,5 +1,5 @@
 [package]
-name = "hd44780_menu"
+name = "hd44780-menu"
 version = "0.1.0"
 authors = ["Cor <prive@corpeters.nl>"]
 edition = "2018"
