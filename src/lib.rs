@@ -137,7 +137,7 @@ impl<'a, Context> MenuItem<'a, Context> {
         let mut output: String<U20> = String::new();
 
         match self.menu_type {
-            MenuItemType::SubMenu(..) => {
+            MenuItemType::SubMenu(..) | MenuItemType::FullScreen(..) => {
                 let _ = write!(output, "{}", self.name);
             },
             MenuItemType::ReadValue(ref rcb) | MenuItemType::WriteValue(ref rcb, ..)  => {
@@ -145,7 +145,6 @@ impl<'a, Context> MenuItem<'a, Context> {
                 rcb(&mut string, ctx);
                 let _ = write!(output, "{}: {}", self.name, string);
             },
-            MenuItemType::FullScreen(..) => {},
         }
 
         output
@@ -215,6 +214,9 @@ impl<'a, Context> Dispatcher<'a, Context> {
 
                 if keys.contains(Keys::None) {
                     self.change = false;
+                    MenuState::Show(menu)
+                }
+                else if keys.contains(Keys::NextItem) {
                     MenuState::Show(menu)
                 }
                 else {
@@ -290,10 +292,10 @@ impl<'a, Context> Dispatcher<'a, Context> {
 
                     // TODO: check destination type
                     if keys.contains(Keys::NextMenu) {
-                        MenuState::BrowseMenus(r, idx.saturating_sub(1) )
+                        MenuState::BrowseMenus(r, idx.saturating_add(1) )
                     }
                     else if keys.contains(Keys::PreviousMenu) {
-                        MenuState::BrowseMenus(r, idx.saturating_add(1) )
+                        MenuState::BrowseMenus(r, idx.saturating_sub(1) )
                     }
                     else if keys.contains(Keys::Enter) || keys.contains(Keys::NextItem) {
                         MenuState::BrowseMenus(&list[idx], 0)
