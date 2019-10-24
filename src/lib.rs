@@ -34,16 +34,20 @@ use heapless::{
     consts::U10,
     consts::U20,
     String,
+    Vec,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keys {
     None,
+    Ignore,
     Enter,
     NextMenu,
     PreviousMenu,
     NextItem,
     PreviousItem,
+    Next,
+    Back,
 }
 
 pub trait ContainsKey {
@@ -128,7 +132,8 @@ pub enum MenuItemType<'a, Context> {
 }
 
 pub struct MenuItem<'a, Context> {
-    pub name: &'a str,
+    pub short_name: &'a str,
+    pub long_name: Option<&'a str>,
     pub parent: Option<&'a MenuItem<'a, Context> >,
     pub menu_type: MenuItemType<'a, Context>,
 }
@@ -138,12 +143,12 @@ impl<'a, Context> MenuItem<'a, Context> {
 
         match self.menu_type {
             MenuItemType::SubMenu(..) | MenuItemType::FullScreen(..) => {
-                let _ = write!(output, "{}", self.name);
+                let _ = write!(output, "{}", self.short_name);
             },
             MenuItemType::ReadValue(ref rcb) | MenuItemType::WriteValue(ref rcb, ..)  => {
                 let mut string = String::<U10>::new();
                 rcb(&mut string, ctx);
-                let _ = write!(output, "{}: {}", self.name, string);
+                let _ = write!(output, "{}: {}", self.short_name, string);
             },
         }
 
@@ -164,15 +169,17 @@ pub struct Dispatcher<'a, Context> {
     state: MenuState<'a, Context>,
     menu: &'a Menu<'a, Context>,
     change: bool,
+    previous_idxs: Vec<usize, U10>,
 }
 
 #[allow(dead_code)]
 impl<'a, Context> Dispatcher<'a, Context> {
-    pub const fn new(menu: &'a Menu<'_, Context>) -> Self {
+    pub fn new(menu: &'a Menu<'_, Context>) -> Self {
         Dispatcher {
             change: true,
             state: MenuState::BrowseMenus(menu.show, 0),
             menu,
+            previous_idxs: Vec::new(),
         }
     }
 
@@ -182,7 +189,7 @@ impl<'a, Context> Dispatcher<'a, Context> {
         if idx +2 >= max {
             (max - size, max)
         }
-        else if idx.saturating_sub(1) < min {
+        else if idx.saturating_sub(1) <= min {
             (min, min +size)
         }
         else {
@@ -194,117 +201,40 @@ impl<'a, Context> Dispatcher<'a, Context> {
         self.state = MenuState::BrowseMenus(self.menu.show, 0);
     }
 
-    fn show(&mut self, menu: &'a MenuItem<'_, Context>, keys: &dyn ContainsKey, ctx: &mut Context, drv: &mut dyn HD44780) -> MenuState<'a, Context> {
-                if let MenuItemType::FullScreen(fcb) = menu.menu_type {
-                    fcb(drv, ctx);
-                }
-                else if let MenuItemType::ReadValue(_) = menu.menu_type {
-                    drv.set_cursor_pos(ROW_START[0]);
-                    vprintln!(drv);
-
-                    drv.set_cursor_pos(ROW_START[1]);
-                    vprintln!(drv, "  {}", menu.name);
-
-                    drv.set_cursor_pos(ROW_START[2]);
-                    vprintln!(drv, "  {}", menu.to_string(ctx) );
-
-                    drv.set_cursor_pos(ROW_START[3]);
-                    vprintln!(drv);
-                }
-
-                if keys.contains(Keys::None) {
-                    self.change = false;
-                    MenuState::Show(menu)
-                }
-                else if keys.contains(Keys::NextItem) {
-                    MenuState::Show(menu)
-                }
-                else {
-                    MenuState::BrowseMenus(menu.parent.unwrap_or(self.menu.menu), 0)
-                }
-    }
-
-    fn change_setting(&mut self, menu: &'a MenuItem<'_, Context>, keys: &dyn ContainsKey, ctx: &mut Context, drv: &mut dyn HD44780) -> MenuState<'a, Context> {
-        if let MenuItemType::WriteValue(_, fcb) = menu.menu_type {
-            drv.set_cursor_pos(ROW_START[0]);
-            vprintln!(drv);
-
-            drv.set_cursor_pos(ROW_START[1]);
-            vprintln!(drv, "  {}", menu.name);
-
-            drv.set_cursor_pos(ROW_START[2]);
-            vprintln!(drv, "  {}", menu.to_string(ctx) );
-
-            drv.set_cursor_pos(ROW_START[3]);
-            vprintln!(drv);
-
-            if keys.contains(Keys::Enter) {
-                MenuState::BrowseMenus(menu.parent.unwrap_or(self.menu.menu), 0)
-            }
-            else {
-                if keys.contains(Keys::NextItem) {
-                    fcb(WriteOptions::Next, ctx);
-                }
-                else if keys.contains(Keys::PreviousItem) {
-                    fcb(WriteOptions::Previous, ctx);
-                }
-                else if keys.contains(Keys::None) {
-                    self.change = false;
-                }
-
-                MenuState::ChangeSetting(menu)
-            }
+    pub fn handle_input(&mut self, keys: &dyn ContainsKey, ctx: &mut Context) {
+        if keys.contains(Keys::None) {
+            self.change = false;
         }
         else {
-            MenuState::BrowseMenus(menu.parent.unwrap_or(self.menu.menu), 0)
-        }
-    }
-
-    pub fn run(&mut self, keys: &dyn ContainsKey, ctx: &mut Context, drv: &mut dyn HD44780) {
-        /* Reset Display, unless told not to, which should happen in the default case. */
-        if self.change {
-            drv.clear();
+            self.change = true;
         }
 
-        self.change = true;
         self.state = match self.state {
             MenuState::BrowseMenus(r, mut idx) => {
-
-                // TODO: add back to previous menu
                 if let MenuItemType::SubMenu(list)  = r.menu_type {
-                    if idx >= list.len() { idx = 0; }
-
-                    let size = if list.len() < LINES { list.len() } else { LINES };
-                    let (min, max) = Self::calc_window(0, idx, list.len(), size);
-
-                    let mut max_idx = 0;
-                    for (r, submenu) in list.iter().skip(min).take(max).enumerate() {
-                        let s = submenu.to_string(ctx);
-
-                        drv.set_cursor_pos(ROW_START[r]);
-                        vprintln!(drv, "  {}", s);
-
-                        max_idx = r;
-                    }
-
-                    drv.set_cursor_pos(ROW_START[idx - min]);
-                    drv.write_char('>');
-
-                    // TODO: check destination type
                     if keys.contains(Keys::NextMenu) {
                         MenuState::BrowseMenus(r, idx.saturating_add(1) )
                     }
                     else if keys.contains(Keys::PreviousMenu) {
                         MenuState::BrowseMenus(r, idx.saturating_sub(1) )
                     }
-                    else if keys.contains(Keys::Enter) || keys.contains(Keys::NextItem) {
+                    else if keys.contains(Keys::Enter) || keys.contains(Keys::Next) {
+                        if self.previous_idxs.push(idx).is_err() {
+                            let _ = self.previous_idxs.pop();
+                            self.previous_idxs.push(idx);
+                        }
                         MenuState::BrowseMenus(&list[idx], 0)
                     }
-                    else if keys.contains(Keys::PreviousItem) {
-                        MenuState::BrowseMenus(r.parent.unwrap_or(self.menu.menu), 0)
+                    else if keys.contains(Keys::Back) {
+                        let prev_idx = if let Some(index) = self.previous_idxs.pop() {
+                            index
+                        }
+                        else {
+                            0
+                        };
+                        MenuState::BrowseMenus(r.parent.unwrap_or(self.menu.menu), prev_idx)
                     }
                     else {
-                        self.change = false;
                         MenuState::BrowseMenus(r, idx)
                     }
                 }
@@ -318,14 +248,178 @@ impl<'a, Context> Dispatcher<'a, Context> {
                     MenuState::ChangeSetting(r)
                 }
                 else {
-                    MenuState::BrowseMenus(self.menu.menu, 0)
+                    let prev_idx = if let Some(index) = self.previous_idxs.pop() {
+                        index
+                    }
+                    else {
+                        0
+                    };
+                    MenuState::BrowseMenus(r.parent.unwrap_or(self.menu.menu), prev_idx)
                 }
             },
             MenuState::Show(s) => {
-                self.show(s, keys, ctx, drv)
+                if keys.contains(Keys::None) {
+                    MenuState::Show(s)
+                }
+                else {
+                    let prev_idx = if let Some(index) = self.previous_idxs.pop() {
+                        index
+                    }
+                    else {
+                        0
+                    };
+                    MenuState::BrowseMenus(s.parent.unwrap_or(self.menu.menu), prev_idx)
+                }
             },
             MenuState::ChangeSetting(r) => {
-                self.change_setting(r, keys, ctx, drv)
+                if let MenuItemType::WriteValue(_, fcb) = r.menu_type {
+                    if keys.contains(Keys::Enter) {
+                        let prev_idx = if let Some(index) = self.previous_idxs.pop() {
+                            index
+                        }
+                        else {
+                            0
+                        };
+                        MenuState::BrowseMenus(r.parent.unwrap_or(self.menu.menu), prev_idx)
+                    }
+                    else {
+                        if keys.contains(Keys::NextItem) {
+                            fcb(WriteOptions::Next, ctx);
+                        }
+                        else if keys.contains(Keys::PreviousItem) {
+                            fcb(WriteOptions::Previous, ctx);
+                        }
+                        MenuState::ChangeSetting(r)
+                    }
+                }
+                else {
+                    let prev_idx = if let Some(index) = self.previous_idxs.pop() {
+                        index
+                    }
+                    else {
+                        0
+                    };
+                    MenuState::BrowseMenus(r.parent.unwrap_or(self.menu.menu), prev_idx)
+                }
+            },
+        }
+    }
+
+    pub fn run(&mut self, ctx: &mut Context, drv: &mut dyn HD44780) {
+        /* Reset Display, unless told not to, which should happen in the default case. */
+        if self.change {
+            drv.clear();
+
+            /* To simplify the key handling code, it needs two passes when a change has been made.
+             * This is the second pass.
+             * */
+            self.handle_input( &(Keys::None,), ctx);
+            self.change = false;
+        }
+
+        self.state = match self.state {
+            MenuState::BrowseMenus(r, mut idx) => {
+                // TODO: add back to previous menu
+                if let MenuItemType::SubMenu(list)  = r.menu_type {
+                    if list.len() > 0 {
+                        if idx >= list.len() { idx = 0; }
+
+                        let size = if list.len() < LINES { list.len() } else { LINES };
+                        let (min, max) = Self::calc_window(0, idx, list.len(), size);
+
+                        let mut max_idx = 0;
+                        for (r, submenu) in list.iter().skip(min).take(max).enumerate() {
+                            let s = submenu.to_string(ctx);
+
+                            drv.set_cursor_pos(ROW_START[r]);
+                            vprintln!(drv, "  {}", s);
+
+                            max_idx = r;
+                        }
+
+                        drv.set_cursor_pos(ROW_START[idx - min]);
+                        drv.write_char('>');
+                    }
+                    else {
+                        drv.set_cursor_pos(ROW_START[0]);
+                        vprintln!(drv, "<Empty>",);
+                    }
+                    MenuState::BrowseMenus(r, idx)
+                }
+                else if let MenuItemType::FullScreen(_)  = r.menu_type {
+                    MenuState::Show(r)
+                }
+                else if let MenuItemType::ReadValue(_)  = r.menu_type {
+                    MenuState::Show(r)
+                }
+                else if let MenuItemType::WriteValue(_, _)  = r.menu_type {
+                    MenuState::ChangeSetting(r)
+                }
+                else {
+                    let prev_idx = if let Some(index) = self.previous_idxs.pop() {
+                        index
+                    }
+                    else {
+                        0
+                    };
+                    MenuState::BrowseMenus(r.parent.unwrap_or(self.menu.menu), prev_idx)
+                }
+            },
+            MenuState::Show(s) => {
+                if let MenuItemType::FullScreen(fcb) = s.menu_type {
+                    fcb(drv, ctx);
+                }
+                else if let MenuItemType::ReadValue(_) = s.menu_type {
+                    drv.set_cursor_pos(ROW_START[0]);
+                    vprintln!(drv);
+
+                    drv.set_cursor_pos(ROW_START[1]);
+                    if let Some(name) = s.long_name {
+                        vprintln!(drv, "  {}", name);
+                    }
+                    else {
+                        vprintln!(drv, "  {}", s.short_name);
+                    }
+
+                    drv.set_cursor_pos(ROW_START[2]);
+                    vprintln!(drv, "  {}", s.to_string(ctx) );
+
+                    drv.set_cursor_pos(ROW_START[3]);
+                    vprintln!(drv);
+                }
+                MenuState::Show(s)
+            },
+            MenuState::ChangeSetting(r) => {
+                if let MenuItemType::WriteValue(_, fcb) = r.menu_type {
+                    drv.set_cursor_pos(ROW_START[0]);
+                    vprintln!(drv);
+
+                    drv.set_cursor_pos(ROW_START[1]);
+                    if let Some(name) = r.long_name {
+                        vprintln!(drv, "  {}", name);
+                    }
+                    else {
+                        vprintln!(drv, "  {}", r.short_name);
+                    }
+
+
+                    drv.set_cursor_pos(ROW_START[2]);
+                    vprintln!(drv, "  {}", r.to_string(ctx) );
+
+                    drv.set_cursor_pos(ROW_START[3]);
+                    vprintln!(drv);
+
+                    MenuState::ChangeSetting(r)
+                }
+                else {
+                    let prev_idx = if let Some(index) = self.previous_idxs.pop() {
+                        index
+                    }
+                    else {
+                        0
+                    };
+                    MenuState::BrowseMenus(r.parent.unwrap_or(self.menu.menu), prev_idx)
+                }
             },
         }
     }
