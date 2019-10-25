@@ -119,16 +119,19 @@ pub enum WriteOptions {
     Previous
 }
 
+type ActiveCallbackFn<C> = fn(context: &C) -> bool;
 type WriteCallbackFn<C> = fn(wo: WriteOptions, context: &mut C);
 type ReadCallbackFn<C> = fn(buf: &mut dyn Write, context: &C);
 type FullScreenCallbackFn<C> = fn(drv: &mut dyn HD44780, context: &C, );
+type ExecCallbackFn<C> = fn(context: &mut C);
 
 #[allow(dead_code)]
 pub enum MenuItemType<'a, Context> {
-    SubMenu(&'a [&'a MenuItem<'a, Context>]),
+    SubMenu(&'a [&'a MenuItem<'a, Context>], ActiveCallbackFn<Context>),
     FullScreen(FullScreenCallbackFn<Context>),
     ReadValue(ReadCallbackFn<Context>),
     WriteValue(ReadCallbackFn<Context>, WriteCallbackFn<Context>),
+    ExecValue(ReadCallbackFn<Context>, ExecCallbackFn<Context>),
 }
 
 pub struct MenuItem<'a, Context> {
@@ -142,10 +145,18 @@ impl<'a, Context> MenuItem<'a, Context> {
         let mut output: String<U20> = String::new();
 
         match self.menu_type {
-            MenuItemType::SubMenu(..) | MenuItemType::FullScreen(..) => {
+            MenuItemType::SubMenu(.., acb) => {
+                if acb(ctx) {
+                    let _ = write!(output, "{}", self.short_name);
+                }
+                else {
+                    let _ = write!(output, "<B: {}>", self.short_name);
+                }
+            }
+            MenuItemType::FullScreen(..) => {
                 let _ = write!(output, "{}", self.short_name);
             },
-            MenuItemType::ReadValue(ref rcb) | MenuItemType::WriteValue(ref rcb, ..)  => {
+            MenuItemType::ReadValue(ref rcb) | MenuItemType::WriteValue(ref rcb, ..) | MenuItemType::ExecValue(ref rcb, ..)  => {
                 let mut string = String::<U10>::new();
                 rcb(&mut string, ctx);
                 let _ = write!(output, "{}: {}", self.short_name, string);
@@ -211,8 +222,17 @@ impl<'a, Context> Dispatcher<'a, Context> {
 
         self.state = match self.state {
             MenuState::BrowseMenus(r, mut idx) => {
-                if let MenuItemType::SubMenu(list)  = r.menu_type {
-                    if keys.contains(Keys::NextMenu) {
+                if let MenuItemType::SubMenu(list, acb)  = r.menu_type {
+                    if keys.contains(Keys::Back) || !acb(ctx) {
+                        let prev_idx = if let Some(index) = self.previous_idxs.pop() {
+                            index
+                        }
+                        else {
+                            0
+                        };
+                        MenuState::BrowseMenus(r.parent.unwrap_or(self.menu.menu), prev_idx)
+                    }
+                    else if keys.contains(Keys::NextMenu) {
                         MenuState::BrowseMenus(r, idx.saturating_add(1) )
                     }
                     else if keys.contains(Keys::PreviousMenu) {
@@ -221,18 +241,9 @@ impl<'a, Context> Dispatcher<'a, Context> {
                     else if keys.contains(Keys::Enter) || keys.contains(Keys::Next) {
                         if self.previous_idxs.push(idx).is_err() {
                             let _ = self.previous_idxs.pop();
-                            self.previous_idxs.push(idx);
+                            let _ = self.previous_idxs.push(idx);
                         }
-                        MenuState::BrowseMenus(&list[idx], 0)
-                    }
-                    else if keys.contains(Keys::Back) {
-                        let prev_idx = if let Some(index) = self.previous_idxs.pop() {
-                            index
-                        }
-                        else {
-                            0
-                        };
-                        MenuState::BrowseMenus(r.parent.unwrap_or(self.menu.menu), prev_idx)
+                        MenuState::BrowseMenus(list[idx], 0)
                     }
                     else {
                         MenuState::BrowseMenus(r, idx)
@@ -248,6 +259,10 @@ impl<'a, Context> Dispatcher<'a, Context> {
                     MenuState::ChangeSetting(r)
                 }
                 else {
+                    if let MenuItemType::ExecValue(_, ecb)  = r.menu_type {
+                        ecb(ctx);
+                    }
+
                     let prev_idx = if let Some(index) = self.previous_idxs.pop() {
                         index
                     }
@@ -320,7 +335,7 @@ impl<'a, Context> Dispatcher<'a, Context> {
         self.state = match self.state {
             MenuState::BrowseMenus(r, mut idx) => {
                 // TODO: add back to previous menu
-                if let MenuItemType::SubMenu(list)  = r.menu_type {
+                if let MenuItemType::SubMenu(list, _)  = r.menu_type {
                     if list.len() > 0 {
                         if idx >= list.len() { idx = 0; }
 
@@ -356,6 +371,10 @@ impl<'a, Context> Dispatcher<'a, Context> {
                     MenuState::ChangeSetting(r)
                 }
                 else {
+                    if let MenuItemType::ExecValue(_, ecb)  = r.menu_type {
+                        ecb(ctx);
+                    }
+
                     let prev_idx = if let Some(index) = self.previous_idxs.pop() {
                         index
                     }
