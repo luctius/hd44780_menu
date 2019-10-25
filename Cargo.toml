@@ -9,5 +9,6 @@ embedded-hal = "*"
 heapless = "*"
 
 [dependencies.hd44780-driver]
-path = "/home/cor/workspace/hd44780-driver"
+git = "https://github.com/luctius/hd44780-driver.git"
+branch = "master"
 
