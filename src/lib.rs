@@ -114,6 +114,7 @@ pub struct Menu<'a, Context> {
     pub menu: &'a MenuItem<'a, Context>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteOptions {
     Next,
     Previous
@@ -150,7 +151,7 @@ impl<'a, Context> MenuItem<'a, Context> {
                     let _ = write!(output, "{}", self.short_name);
                 }
                 else {
-                    let _ = write!(output, "<B: {}>", self.short_name);
+                    let _ = write!(output, "[{}]", self.short_name);
                 }
             }
             MenuItemType::FullScreen(..) => {
