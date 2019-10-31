@@ -32,6 +32,7 @@ use hd44780_driver::HD44780;
 
 use heapless::{
     consts::U12,
+    consts::U18,
     consts::U20,
     String,
     Vec,
@@ -106,6 +107,13 @@ macro_rules! vprintln {
     ($stdout:expr)                         => { vprint!($stdout, U20, "") };
     ($stdout:expr, $fmt:expr)              => { vprint!($stdout, U20, $fmt) };
     ($stdout:expr, $fmt:expr, $($arg:tt)*) => { vprint!($stdout, U20, $fmt, $($arg)*) };
+}
+
+#[macro_export]
+macro_rules! sz_vprintln {
+    ($stdout:expr, $sz:tt)                         => { vprint!($stdout, $sz, "") };
+    ($stdout:expr, $sz:tt, $fmt:expr)              => { vprint!($stdout, $sz, $fmt) };
+    ($stdout:expr, $sz:tt, $fmt:expr, $($arg:tt)*) => { vprint!($stdout, $sz, $fmt, $($arg)*) };
 }
 
 pub struct Menu<'a, Context> {
@@ -376,13 +384,10 @@ impl<'a, Context> Dispatcher<'a, Context> {
                             let s = submenu.to_string(ctx);
 
                             drv.set_cursor_pos(ROW_START[r]);
-                            vprintln!(drv, "  {}", s);
+                            vprintln!(drv, "{} {}", if r == (idx - min) {'>'} else {' '}, s);
 
                             max_idx = r;
                         }
-
-                        drv.set_cursor_pos(ROW_START[idx - min]);
-                        drv.write_char('>');
                     }
                     else {
                         drv.set_cursor_pos(ROW_START[0]);
