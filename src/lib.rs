@@ -266,10 +266,12 @@ impl<'a, Context> Dispatcher<'a, Context> {
                         MenuState::BrowseMenus(r.parent.unwrap_or(self.menu.menu), prev_idx)
                     }
                     else if keys.contains(Keys::NextMenu) {
-                        MenuState::BrowseMenus(r, idx.saturating_add(1) )
+                        MenuState::BrowseMenus(r, idx +1 )
                     }
                     else if keys.contains(Keys::PreviousMenu) {
-                        MenuState::BrowseMenus(r, idx.saturating_sub(1) )
+                        let idx: isize = idx as isize -1;
+                        let idx = if idx < 0 { list.len()-1 } else { idx as usize };
+                        MenuState::BrowseMenus(r, idx )
                     }
                     else if keys.contains(Keys::Enter) || keys.contains(Keys::Next) {
                         if self.previous_idxs.push(idx).is_err() {
