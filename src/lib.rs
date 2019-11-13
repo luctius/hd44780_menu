@@ -214,6 +214,7 @@ pub struct Dispatcher<'a, Context> {
     menu: &'a Menu<'a, Context>,
     change: bool,
     previous_idxs: Vec<usize, U12>,
+    read_write: bool,
 }
 
 #[allow(dead_code)]
@@ -221,6 +222,7 @@ impl<'a, Context> Dispatcher<'a, Context> {
     pub fn new(menu: &'a Menu<'_, Context>) -> Self {
         Dispatcher {
             change: true,
+            read_write: true,
             state: MenuState::BrowseMenus(menu.show, 0),
             menu,
             previous_idxs: Vec::new(),
@@ -256,7 +258,9 @@ impl<'a, Context> Dispatcher<'a, Context> {
         self.state = match self.state {
             MenuState::BrowseMenus(r, mut idx) => {
                 if let MenuItemType::SubMenu(list, acb)  = r.menu_type {
-                    if keys.contains(Keys::Back) || !acb(ctx) {
+                    self.read_write = acb(ctx);
+
+                    if keys.contains(Keys::Back) {
                         let prev_idx = if let Some(index) = self.previous_idxs.pop() {
                             index
                         }
@@ -295,7 +299,9 @@ impl<'a, Context> Dispatcher<'a, Context> {
                 }
                 else {
                     if let MenuItemType::ExecValue(_, ecb)  = r.menu_type {
-                        ecb(ctx);
+                        if self.read_write { 
+                            ecb(ctx);
+                        }
                     }
 
                     let prev_idx = if let Some(index) = self.previous_idxs.pop() {
@@ -324,11 +330,11 @@ impl<'a, Context> Dispatcher<'a, Context> {
             MenuState::ChangeSetting(r) => {
                 if let MenuItemType::WriteValue(_, fcb) = r.menu_type {
                     if keys.contains(Keys::NextItem) {
-                        fcb(WriteOptions::Next, ctx);
+                        if self.read_write { fcb(WriteOptions::Next, ctx); }
                         MenuState::ChangeSetting(r)
                     }
                     else if keys.contains(Keys::PreviousItem) {
-                        fcb(WriteOptions::Previous, ctx);
+                        if self.read_write { fcb(WriteOptions::Previous, ctx); }
                         MenuState::ChangeSetting(r)
                     }
                     else {
