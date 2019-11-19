@@ -31,13 +31,14 @@ use core::fmt::Write;
 use hd44780_driver::HD44780;
 
 use heapless::{
-    consts::U10,
+    consts::U12,
+    consts::U18,
     consts::U20,
     String,
     Vec,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Keys {
     None,
     Ignore,
@@ -108,12 +109,20 @@ macro_rules! vprintln {
     ($stdout:expr, $fmt:expr, $($arg:tt)*) => { vprint!($stdout, U20, $fmt, $($arg)*) };
 }
 
+#[macro_export]
+macro_rules! sz_vprintln {
+    ($stdout:expr, $sz:tt)                         => { vprint!($stdout, $sz, "") };
+    ($stdout:expr, $sz:tt, $fmt:expr)              => { vprint!($stdout, $sz, $fmt) };
+    ($stdout:expr, $sz:tt, $fmt:expr, $($arg:tt)*) => { vprint!($stdout, $sz, $fmt, $($arg)*) };
+}
+
 pub struct Menu<'a, Context> {
     pub name: &'a str,
     pub show: &'a MenuItem<'a, Context>,
     pub menu: &'a MenuItem<'a, Context>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteOptions {
     Next,
     Previous
@@ -150,16 +159,40 @@ impl<'a, Context> MenuItem<'a, Context> {
                     let _ = write!(output, "{}", self.short_name);
                 }
                 else {
-                    let _ = write!(output, "<B: {}>", self.short_name);
+                    let _ = write!(output, "[{}]", self.short_name);
                 }
             }
             MenuItemType::FullScreen(..) => {
                 let _ = write!(output, "{}", self.short_name);
             },
             MenuItemType::ReadValue(ref rcb) | MenuItemType::WriteValue(ref rcb, ..) | MenuItemType::ExecValue(ref rcb, ..)  => {
-                let mut string = String::<U10>::new();
+                let mut string = String::<U12>::new();
                 rcb(&mut string, ctx);
                 let _ = write!(output, "{}: {}", self.short_name, string);
+            },
+        }
+
+        output
+    }
+    fn to_display(&self, ctx: &mut Context) -> String<U20> {
+        let mut output: String<U20> = String::new();
+
+        match self.menu_type {
+            MenuItemType::SubMenu(.., acb) => {
+                if acb(ctx) {
+                    let _ = write!(output, "{}", self.short_name);
+                }
+                else {
+                    let _ = write!(output, "[{}]", self.short_name);
+                }
+            }
+            MenuItemType::FullScreen(..) => {
+                let _ = write!(output, "{}", self.short_name);
+            },
+            MenuItemType::ReadValue(ref rcb) | MenuItemType::WriteValue(ref rcb, ..) | MenuItemType::ExecValue(ref rcb, ..)  => {
+                let mut string = String::<U20>::new();
+                rcb(&mut string, ctx);
+                let _ = write!(output, "{}", string);
             },
         }
 
@@ -180,7 +213,8 @@ pub struct Dispatcher<'a, Context> {
     state: MenuState<'a, Context>,
     menu: &'a Menu<'a, Context>,
     change: bool,
-    previous_idxs: Vec<usize, U10>,
+    previous_idxs: Vec<usize, U12>,
+    read_write: bool,
 }
 
 #[allow(dead_code)]
@@ -188,6 +222,7 @@ impl<'a, Context> Dispatcher<'a, Context> {
     pub fn new(menu: &'a Menu<'_, Context>) -> Self {
         Dispatcher {
             change: true,
+            read_write: true,
             state: MenuState::BrowseMenus(menu.show, 0),
             menu,
             previous_idxs: Vec::new(),
@@ -200,11 +235,11 @@ impl<'a, Context> Dispatcher<'a, Context> {
         if idx +2 >= max {
             (max - size, max)
         }
-        else if idx.saturating_sub(1) <= min {
+        else if idx.saturating_sub(2) <= min {
             (min, min +size)
         }
         else {
-            (idx -1, min + size)
+            (idx -2, min + size)
         }
     }
 
@@ -224,7 +259,9 @@ impl<'a, Context> Dispatcher<'a, Context> {
         self.state = match self.state {
             MenuState::BrowseMenus(r, mut idx) => {
                 if let MenuItemType::SubMenu(list, acb)  = r.menu_type {
-                    if keys.contains(Keys::Back) || !acb(ctx) {
+                    self.read_write = acb(ctx);
+
+                    if keys.contains(Keys::Back) {
                         let prev_idx = if let Some(index) = self.previous_idxs.pop() {
                             index
                         }
@@ -234,10 +271,12 @@ impl<'a, Context> Dispatcher<'a, Context> {
                         MenuState::BrowseMenus(r.parent.unwrap_or(self.menu.menu), prev_idx)
                     }
                     else if keys.contains(Keys::NextMenu) {
-                        MenuState::BrowseMenus(r, idx.saturating_add(1) )
+                        MenuState::BrowseMenus(r, idx +1 )
                     }
                     else if keys.contains(Keys::PreviousMenu) {
-                        MenuState::BrowseMenus(r, idx.saturating_sub(1) )
+                        let idx: isize = idx as isize -1;
+                        let idx = if idx < 0 { list.len()-1 } else { idx as usize };
+                        MenuState::BrowseMenus(r, idx )
                     }
                     else if keys.contains(Keys::Enter) || keys.contains(Keys::Next) {
                         if self.previous_idxs.push(idx).is_err() {
@@ -261,7 +300,9 @@ impl<'a, Context> Dispatcher<'a, Context> {
                 }
                 else {
                     if let MenuItemType::ExecValue(_, ecb)  = r.menu_type {
-                        ecb(ctx);
+                        if self.read_write { 
+                            ecb(ctx);
+                        }
                     }
 
                     let prev_idx = if let Some(index) = self.previous_idxs.pop() {
@@ -289,23 +330,27 @@ impl<'a, Context> Dispatcher<'a, Context> {
             },
             MenuState::ChangeSetting(r) => {
                 if let MenuItemType::WriteValue(_, fcb) = r.menu_type {
-                    if keys.contains(Keys::Enter) {
-                        let prev_idx = if let Some(index) = self.previous_idxs.pop() {
-                            index
-                        }
-                        else {
-                            0
-                        };
-                        MenuState::BrowseMenus(r.parent.unwrap_or(self.menu.menu), prev_idx)
+                    if keys.contains(Keys::NextItem) {
+                        if self.read_write { fcb(WriteOptions::Next, ctx); }
+                        MenuState::ChangeSetting(r)
+                    }
+                    else if keys.contains(Keys::PreviousItem) {
+                        if self.read_write { fcb(WriteOptions::Previous, ctx); }
+                        MenuState::ChangeSetting(r)
                     }
                     else {
-                        if keys.contains(Keys::NextItem) {
-                            fcb(WriteOptions::Next, ctx);
+                        if keys.contains(Keys::Enter) || keys.contains(Keys::Back) {
+                            let prev_idx = if let Some(index) = self.previous_idxs.pop() {
+                                index
+                            }
+                            else {
+                                0
+                            };
+                            MenuState::BrowseMenus(r.parent.unwrap_or(self.menu.menu), prev_idx)
                         }
-                        else if keys.contains(Keys::PreviousItem) {
-                            fcb(WriteOptions::Previous, ctx);
+                        else {
+                            MenuState::ChangeSetting(r)
                         }
-                        MenuState::ChangeSetting(r)
                     }
                 }
                 else {
@@ -348,13 +393,10 @@ impl<'a, Context> Dispatcher<'a, Context> {
                             let s = submenu.to_string(ctx);
 
                             drv.set_cursor_pos(ROW_START[r]);
-                            vprintln!(drv, "  {}", s);
+                            vprintln!(drv, "{} {}", if r == (idx - min) {'>'} else {' '}, s);
 
                             max_idx = r;
                         }
-
-                        drv.set_cursor_pos(ROW_START[idx - min]);
-                        drv.write_char('>');
                     }
                     else {
                         drv.set_cursor_pos(ROW_START[0]);
@@ -402,7 +444,7 @@ impl<'a, Context> Dispatcher<'a, Context> {
                     }
 
                     drv.set_cursor_pos(ROW_START[2]);
-                    vprintln!(drv, "  {}", s.to_string(ctx) );
+                    vprintln!(drv, "  {}", s.to_display(ctx) );
 
                     drv.set_cursor_pos(ROW_START[3]);
                     vprintln!(drv);
@@ -410,7 +452,7 @@ impl<'a, Context> Dispatcher<'a, Context> {
                 MenuState::Show(s)
             },
             MenuState::ChangeSetting(r) => {
-                if let MenuItemType::WriteValue(_, fcb) = r.menu_type {
+                if let MenuItemType::WriteValue(_, _) = r.menu_type {
                     drv.set_cursor_pos(ROW_START[0]);
                     vprintln!(drv);
 
@@ -424,7 +466,7 @@ impl<'a, Context> Dispatcher<'a, Context> {
 
 
                     drv.set_cursor_pos(ROW_START[2]);
-                    vprintln!(drv, "  {}", r.to_string(ctx) );
+                    vprintln!(drv, "  {}", r.to_display(ctx) );
 
                     drv.set_cursor_pos(ROW_START[3]);
                     vprintln!(drv);
