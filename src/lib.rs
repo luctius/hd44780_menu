@@ -208,7 +208,8 @@ impl<'a, Context> Dispatcher<'a, Context> {
         }
     }
 
-    pub fn reset_to_show(&mut self) {
+    pub fn reset_to_show(&mut self, drv: &mut dyn HD44780) {
+        drv.clear();
         self.state = MenuState::BrowseMenus(self.menu.show, 0);
     }
 
