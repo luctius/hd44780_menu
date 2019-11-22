@@ -223,7 +223,7 @@ impl<'a, Context> Dispatcher<'a, Context> {
         Dispatcher {
             change: true,
             read_write: true,
-            state: MenuState::BrowseMenus(menu.show, 0),
+            state: MenuState::BrowseMenus(menu.menu, 0),
             menu,
             previous_idxs: Vec::new(),
         }
