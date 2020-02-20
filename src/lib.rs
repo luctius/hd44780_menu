@@ -130,7 +130,7 @@ pub enum WriteOptions {
 
 type ActiveCallbackFn<C> = fn(context: &mut C) -> bool;
 type WriteCallbackFn<C> = fn(wo: WriteOptions, context: &mut C);
-type ReadCallbackFn<C> = fn(buf: &mut dyn Write, context: &mut C);
+type ReadCallbackFn<C> = fn(buf: &mut dyn Write, context: &mut C, long: bool);
 type FullScreenCallbackFn<C> = fn(drv: &mut dyn HD44780, context: &mut C, );
 type ExecCallbackFn<C> = fn(context: &mut C);
 
@@ -167,7 +167,7 @@ impl<'a, Context> MenuItem<'a, Context> {
             },
             MenuItemType::ReadValue(ref rcb) | MenuItemType::WriteValue(ref rcb, ..) | MenuItemType::ExecValue(ref rcb, ..)  => {
                 let mut string = String::<U12>::new();
-                rcb(&mut string, ctx);
+                rcb(&mut string, ctx, false);
                 let _ = write!(output, "{}: {}", self.short_name, string);
             },
         }
@@ -191,7 +191,7 @@ impl<'a, Context> MenuItem<'a, Context> {
             },
             MenuItemType::ReadValue(ref rcb) | MenuItemType::WriteValue(ref rcb, ..) | MenuItemType::ExecValue(ref rcb, ..)  => {
                 let mut string = String::<U20>::new();
-                rcb(&mut string, ctx);
+                rcb(&mut string, ctx, true);
                 let _ = write!(output, "{}", string);
             },
         }
