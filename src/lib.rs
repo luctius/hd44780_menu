@@ -128,10 +128,10 @@ pub enum WriteOptions {
     Previous
 }
 
-type ActiveCallbackFn<C> = fn(context: &C) -> bool;
+type ActiveCallbackFn<C> = fn(context: &mut C) -> bool;
 type WriteCallbackFn<C> = fn(wo: WriteOptions, context: &mut C);
-type ReadCallbackFn<C> = fn(buf: &mut dyn Write, context: &C);
-type FullScreenCallbackFn<C> = fn(drv: &mut dyn HD44780, context: &C, );
+type ReadCallbackFn<C> = fn(buf: &mut dyn Write, context: &mut C);
+type FullScreenCallbackFn<C> = fn(drv: &mut dyn HD44780, context: &mut C, );
 type ExecCallbackFn<C> = fn(context: &mut C);
 
 #[allow(dead_code)]
